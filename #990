@@ -1,0 +1,20 @@
+import subprocess
+
+def run_in_jail(code):
+    try:
+        # Crear un proceso seguro con subprocess
+        result = subprocess.run(["python", "-c", code], capture_output=True, text=True, timeout=5)
+        
+        # Verificar si hubo algún error durante la ejecución
+        if result.returncode == 0:
+            return result.stdout
+        else:
+            return f"Error: {result.stderr}"
+    
+    except subprocess.TimeoutExpired:
+        return "Error: Tiempo de ejecución excedido."
+
+# Ejemplo de uso
+codigo = "print('Hola, mundo!')"
+resultado = run_in_jail(codigo)
+print(resultado)
