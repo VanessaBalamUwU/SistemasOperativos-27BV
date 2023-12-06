@@ -1,0 +1,939 @@
+#!/bin/bash
+
+# Recommendation 1.1 - Place Databases on Non-System Partitions
+
+# Obtain the current datadir location
+datadir_location=$(mysql -u<USERNAME> -p<PASSWORD> -e "SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'datadir';" -sN)
+
+# Check if datadir is on the system partition
+if [[ $datadir_location == / || $datadir_location == /var || $datadir_location == /usr ]]; then
+    echo "WARNING: Database is currently on the system partition."
+    
+    # Choose a new location for MariaDB data
+    new_datadir_location="/path/to/non-system/partition"
+    
+    # Backup the database
+    mysqldump -u<USERNAME> -p<PASSWORD> --all-databases > db_backup.sql
+
+    # Stop MariaDB
+    systemctl stop mariadb
+
+    # Copy data to the new location
+    cp -rp $datadir_location/* $new_datadir_location/
+
+    # Update MariaDB configuration file with new datadir location
+    sed -i "s|^datadir.*|datadir = $new_datadir_location|" /etc/my.cnf
+
+    # Start MariaDB
+    systemctl start mariadb
+
+    echo "Database has been moved to the non-system partition."
+else
+    echo "Database is already on a non-system partition."
+fi
+
+# Check if a MariaDB user exists
+if id -u mysql >/dev/null 2>&1; then
+    echo "MariaDB user already exists. Verification successful."
+else
+    # Create a group for MariaDB
+    /usr/sbin/groupadd -g 27 -o -r mysql >/dev/null 2>&1 || :
+    
+    # Create a user for MariaDB without shell access
+    /usr/sbin/useradd -M -N -g mysql -o -r -d /var/lib/mysql -s /bin/false \
+     -c "MariaDB Server" -u 27 mysql >/dev/null 2>&1 || :
+    
+    echo "MariaDB user created successfully."
+fi
+
+# Check if MariaDB is running with the correct user
+if ps -ef | egrep "^mysql.*$" >/dev/null 2>&1; then
+    echo "MariaDB is running with the correct user. Verification successful."
+else
+    echo "Error: MariaDB is not running with the correct user."
+fi
+# Find and remove .mysql_history in home directories
+find /home -name ".mysql_history" -exec rm -f {} \;
+
+# Find and remove .mysql_history in root directory
+find /root -name ".mysql_history" -exec rm -f {} \;
+
+# Set MYSQL_HISTFILE to /dev/null for MariaDB Client
+echo "export MYSQL_HISTFILE=/dev/null" >> ~/.bashrc
+source ~/.bashrc
+
+# Create a symbolic link to /dev/null for MariaDB Client
+ln -s /dev/null ~/.mysql_history
+
+echo "MariaDB command history disabled successfully."
+# Check if MYSQL_PWD is set for any process
+result=$(grep -r "MYSQL_PWD" /proc/*/environ 2>/dev/null)
+
+# If MYSQL_PWD is found, print the processes
+if [ -n "$result" ]; then
+    echo "MYSQL_PWD is set in the following processes:"
+    echo "$result"
+    
+    # Remediation: Update the processes to use a more secure method
+    echo "Remediation: Update the processes to use a more secure method."
+    # You might need to manually review and update the scripts or configurations
+    
+else
+    echo "MYSQL_PWD is not set in any processes. Good job!"
+fi
+# Check if interactive login is disabled for the MariaDB user
+result=$(getent passwd mysql | egrep -q "^.*[\/bin\/false|\/sbin\/nologin]$" && echo "Pass" || echo "Fail")
+
+# If interactive login is enabled, print the result and remediation steps
+if [ "$result" == "Fail" ]; then
+    echo "Interactive login is enabled for the MariaDB user."
+
+    # Remediation: Disable interactive login
+    echo "Remediation: Disabling interactive login for the MariaDB user."
+    usermod -s /bin/false mysql
+    # Or use the following command to set /sbin/nologin
+    # usermod -s /sbin/nologin mysql
+    
+    echo "Interactive login has been disabled for the MariaDB user."
+
+else
+    echo "Interactive login is already disabled for the MariaDB user. Good job!"
+fi
+# Check if MYSQL_PWD is set in users' profiles
+users_with_mysql_pwd=$(grep -l "MYSQL_PWD" /home/*/.{bashrc,profile,bash_profile} 2>/dev/null)
+
+# If MYSQL_PWD is found in users' profiles, print the result and remediation steps
+if [ -n "$users_with_mysql_pwd" ]; then
+    echo "MYSQL_PWD is set in the following users' profiles:"
+    echo "$users_with_mysql_pwd"
+
+    # Remediation: Remove MYSQL_PWD from users' profiles
+    echo "Remediation: Removing MYSQL_PWD from users' profiles."
+    sed -i '/MYSQL_PWD/d' $users_with_mysql_pwd
+
+    echo "MYSQL_PWD has been removed from users' profiles."
+
+else
+    echo "MYSQL_PWD is not set in users' profiles. Good job!"
+fi
+# Check if MariaDB is run under a sandbox environment
+chroot_value=$(cat /etc/mysql | egrep '(?<=^chroot=).+$' | awk '{print $1}')
+
+# Check if MariaDB is managed by systemd
+systemd_status=$(systemctl status <mariadb>.service | grep "Main PID:")
+
+# Check if Docker is installed and MariaDB container is running
+docker_installed=$(docker -v)
+mariadb_image=$(sudo docker images | grep "mariadb")
+mariadb_container=$(sudo docker ps | grep "mariadb:latest")
+
+# If MariaDB is not run under a sandbox environment, print the result and remediation steps
+if [ -z "$chroot_value" ] && [ -z "$systemd_status" ] && [ -z "$mariadb_container" ]; then
+    echo "MariaDB is not run under a sandbox environment."
+
+    # Remediation: Configure MariaDB to use chroot
+    echo "Remediation: Configure MariaDB to use chroot."
+    # Replace <chroot_location> with the desired non-system partition
+    echo "chroot=<chroot_location>" >> /etc/mysql
+
+    # Or remediate for systemd
+    # Add systemd configuration steps here
+
+    # Or remediate for Docker
+    # Add Docker configuration steps here
+
+    echo "MariaDB is now configured to run under a sandbox environment."
+
+else
+    echo "MariaDB is already run under a sandbox environment. Good job!"
+fi
+
+# Check if a backup policy is in place
+backup_schedule=$(crontab -l | grep "backup_script.sh")
+
+# If no backup schedule is found, print the result and remediation steps
+if [ -z "$backup_schedule" ]; then
+    echo "Backup policy is not in place."
+
+    # Remediation: Create a backup policy and schedule
+    echo "Remediation: Create a backup policy and schedule."
+    # Add your backup script details here, for example:
+    # echo "0 2 * * * /path/to/backup_script.sh" | crontab -
+
+    echo "Backup policy has been implemented."
+
+else
+    echo "Backup policy is already in place. Good job!"
+fi
+# Check if backup validation tests are in place
+backup_validation=$(grep -r "Backup validation test" /var/log/backup_validation.log)
+
+# If no backup validation tests are found, print the result and remediation steps
+if [ -z "$backup_validation" ]; then
+    echo "Backup validation tests are not in place."
+
+    # Remediation: Implement regular backup checks
+    echo "Remediation: Implement regular backup checks and document each check."
+    # Add your backup validation test details here, for example:
+    # echo "Backup validation test: $(date)" >> /var/log/backup_validation.log
+
+    echo "Backup validation tests have been implemented."
+
+else
+    echo "Backup validation tests are already in place. Great!"
+fi
+# Check permissions of files containing backup credentials
+backup_credential_files="/etc/my.cnf /path/to/backup_credentials_file"
+
+for file in $backup_credential_files; do
+    permissions=$(ls -l $file | awk '{print $1}')
+
+    # If permissions are too permissive, print the result and remediation steps
+    if [[ $permissions != "------r-----" ]]; then
+        echo "Permissions for $file are too permissive: $permissions"
+
+        # Remediation: Change file permissions
+        echo "Remediation: Change file permissions for $file to secure the backup credentials."
+        # Add your command to change permissions, for example:
+        # chmod 600 $file
+
+        echo "File permissions have been updated."
+
+    else
+        echo "Permissions for $file are secure. Great!"
+    fi
+done
+# Specify the path to backup files
+backup_files="/path/to/backups/*"
+
+for file in $backup_files; do
+    # Check if the file is world-readable
+    if [[ $(ls -l $file | awk '{print $1}' | cut -c8) == "r" ]]; then
+        echo "Backup file $file is world-readable. This is a security risk."
+
+        # Remediation: Restrict filesystem permissions
+        echo "Remediation: Restrict filesystem permissions for $file to prevent unauthorized access."
+        # Add your command to change permissions, for example:
+        # chmod go-r $file
+
+        echo "File permissions have been updated."
+    else
+        echo "Permissions for $file are secure. Good job!"
+    fi
+done
+
+# Check if binlogs are enabled
+binlog_enabled=$(mysql -e "SHOW VARIABLES LIKE 'log_bin';" | awk '$2=="ON" {print "enabled"}')
+
+if [ "$binlog_enabled" != "enabled" ]; then
+    echo "Binlogs are not enabled. Enable binlogs to implement point-in-time recovery."
+    # Remediation: Enable binlogs
+    echo "Remediation: Enable binlogs using the appropriate configuration settings."
+    # Add your commands to enable binlogs, for example:
+    # echo "log_bin = ON" >> /etc/mysql/my.cnf
+else
+    echo "Binlogs are enabled. Good job!"
+
+    # Check if binlog-expire-logs-seconds is set
+    expire_logs_seconds=$(mysql -e "SHOW VARIABLES LIKE 'binlog_expire_logs_seconds';" | awk '$2!=0 {print $2}')
+
+    if [ -z "$expire_logs_seconds" ]; then
+        echo "Binlog expiration is not set. It is recommended to set binlog-expire-logs-seconds."
+        # Remediation: Set binlog-expire-logs-seconds
+        echo "Remediation: Set binlog-expire-logs-seconds to an appropriate value, e.g., 864000 seconds (10 days)."
+        # Add your commands to set binlog-expire-logs-seconds, for example:
+        # echo "binlog_expire_logs_seconds = 864000" >> /etc/mysql/my.cnf
+    else
+        echo "Binlog expiration is set to $expire_logs_seconds seconds. Good job!"
+    fi
+fi
+
+# Check if a disaster recovery plan exists
+if [ -e "/path/to/disaster_recovery_plan" ]; then
+    echo "A disaster recovery plan exists. Good job!"
+else
+    echo "No disaster recovery plan found. Create a disaster recovery plan."
+    # Remediation: Create a disaster recovery plan
+    echo "Remediation: Create a comprehensive disaster recovery plan that includes:"
+    echo "1. MariaDB Galera Cluster (group replication) or MariaDB Replication setup."
+    echo "2. Consider using replicas in different data centers."
+    echo "3. Implement offsite backups."
+    echo "4. Define the Recovery Time Objective (RTO)."
+    echo "5. Ensure the recovery site has the same capacity."
+    echo "6. Consider delayed replicas for added resilience."
+    echo "7. Implement network (default) and at-rest encryption to protect data."
+fi
+# List of files to check for inclusion in backups
+files_to_check=(
+    "/etc/mariadb/mariadb.cnf"
+    "/path/to/key_management_files"
+    "/path/to/audit_log_files"
+    "/path/to/ssl_files"
+    "/path/to/user_defined_functions"
+    "/path/to/source_code_for_customizations"
+)
+
+# Flag to track if all files are included in the backup
+all_files_included=true
+
+# Check if each file exists and is included in the backup
+for file_path in "${files_to_check[@]}"; do
+    if [ -e "$file_path" ]; then
+        echo "File $file_path is present. Good job!"
+    else
+        echo "File $file_path is missing. Add it to the backup."
+        # Set the flag to false if any file is missing
+        all_files_included=false
+    fi
+done
+
+# Provide remediation steps if any file is missing
+if [ "$all_files_included" = false ]; then
+    echo "Remediation: Add the missing files to your backup strategy."
+fi
+
+# This script sets up secure password handling for MariaDB client
+
+# Check if .mariadb.cnf exists
+if [ ! -f ~/.mariadb.cnf ]; then
+    touch ~/.mariadb.cnf
+    chmod 600 ~/.mariadb.cnf
+fi
+
+# Prompt user for MariaDB credentials
+read -p "Enter MariaDB username: " username
+read -s -p "Enter MariaDB password: " password
+
+# Write credentials to .mariadb.cnf
+echo -e "[client]" > ~/.mariadb.cnf
+echo -e "user=$username" >> ~/.mariadb.cnf
+echo -e "password=$password" >> ~/.mariadb.cnf
+
+echo -e "\nCredentials have been securely stored in ~/.mariadb.cnf"
+
+# Execute SQL query to list users and their associations
+mysql -u your_username -pyour_password <<EOF
+SELECT host, user, plugin,
+ IF(plugin = 'mysql_native_password',
+'WEAK SHA1', 'STRONG SHA2') AS HASHTYPE
+FROM mysql.user WHERE user NOT IN
+ ('mysql.infoschema', 'mysql.session', 'mysql.sys') AND
+ plugin NOT LIKE 'auth%' AND plugin <> 'mysql_no_login' AND
+ LENGTH(authentication_string) > 0
+ORDER BY plugin;
+EOF
+
+# This script checks if cryptographic material used by MariaDB is non-default and unique to the instance.
+
+# Define the data directory and SSL certificate directory
+data_dir="/path/to/your/data_directory"
+ssl_cert_dir="/path/to/your/ssl_certificate_directory"
+
+# Check the server certificate for auto-generated name
+certificate_subject=$(openssl x509 -in $ssl_cert_dir/server-cert.pem -subject -noout | grep "Auto_Generated_Server_Certificate")
+
+# If the output contains the auto-generated name, it's a finding
+if [ -n "$certificate_subject" ]; then
+    echo "Auto-generated server certificate found. This is a finding."
+else
+    echo "No auto-generated server certificate found. This check passes."
+fi
+
+# This script checks if the global password lifetime is less than or equal to 365
+# and also checks the password lifetime for individual user accounts.
+
+# Check the global password lifetime
+global_password_lifetime=$(mysql -N -e "SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME LIKE 'default_password_lifetime';")
+
+if [ "$global_password_lifetime" -gt 365 ]; then
+    echo "Global password lifetime is greater than 365. This is a finding."
+else
+    echo "Global password lifetime is less than or equal to 365 or not configured. This check passes."
+
+    # Check password lifetime for individual user accounts
+    mysql -N -e "
+        WITH password_expiration_info AS (
+            SELECT User, Host,
+            IF(
+                IFNULL(JSON_EXTRACT(Priv, '\$.password_lifetime'), -1) = -1,
+                @@global.default_password_lifetime,
+                JSON_EXTRACT(Priv, '\$.password_lifetime')
+            ) AS password_lifetime,
+            JSON_EXTRACT(Priv, '\$.password_last_changed') AS password_last_changed
+            FROM mysql.global_priv
+        )
+        SELECT pei.User, pei.Host,
+        pei.password_lifetime,
+        FROM_UNIXTIME(pei.password_last_changed) AS password_last_changed_datetime,
+        FROM_UNIXTIME(
+            pei.password_last_changed +
+            (pei.password_lifetime * 60 * 60 * 24)
+        ) AS password_expiration_datetime
+        FROM password_expiration_info pei
+        WHERE pei.password_lifetime != 0
+        AND pei.password_last_changed IS NOT NULL
+        UNION
+        SELECT pei.User, pei.Host,
+        pei.password_lifetime,
+        FROM_UNIXTIME(pei.password_last_changed) AS password_last_changed_datetime,
+        0 AS password_expiration_datetime
+        FROM password_expiration_info pei
+        WHERE pei.password_lifetime = 0
+        OR pei.password_last_changed IS NULL;
+    "
+fi
+
+# This script checks if user accounts are currently in use and locks those that are not.
+
+# Review the locked status of accounts
+locked_accounts=$(mysql -N -e "SELECT CONCAT(user, '@', host) FROM mysql.global_priv WHERE JSON_UNQUOTE(JSON_EXTRACT(priv, '\$.account_locked')) = 'true';")
+
+if [ -z "$locked_accounts" ]; then
+    echo "No accounts are currently locked. This check passes."
+else
+    echo "The following accounts are currently locked:"
+    echo "$locked_accounts"
+    
+    # Provide guidance on how to unlock accounts if needed
+    echo "To unlock accounts, you can use the following command for each account:"
+    echo "ALTER USER '<username>'@'<hostname>' ACCOUNT UNLOCK;"
+fi
+
+# This script checks if the unix_socket plugin is enabled and if users are allowed to authenticate using unix_socket.
+
+# Check if the unix_socket plugin is enabled
+unix_socket_status=$(mysql -N -e "SELECT PLUGIN_STATUS FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME = 'unix_socket';")
+
+if [ "$unix_socket_status" = "ACTIVE" ]; then
+    echo "The unix_socket plugin is currently enabled. This check passes."
+else
+    echo "The unix_socket plugin is not enabled. This is a fail."
+    echo "To enable the unix_socket plugin, add the following option under the [mysqld] option group in your MariaDB configuration file and restart MariaDB:"
+    echo "unix_socket=ON"
+fi
+
+# Check users who can use unix_socket
+unix_socket_users=$(mysql -N -e "SELECT CONCAT(user, '@', host) FROM mysql.global_priv WHERE JSON_UNQUOTE(JSON_EXTRACT(priv, '\$.auth_or.plugin')) = 'unix_socket';")
+
+if [ -z "$unix_socket_users" ]; then
+    echo "No users are configured to use unix_socket. This is a fail."
+else
+    echo "The following users are configured to use unix_socket:"
+    echo "$unix_socket_users"
+    
+    # Provide guidance on how to disable unix_socket for specific users if needed
+    echo "To disable unix_socket for a user, use the following command for each user:"
+    echo "ALTER USER '<username>'@'<hostname>' IDENTIFIED VIA 'mysql_native_password';"
+fi
+
+# This script checks if the bind_address configuration option is set in the MariaDB configuration.
+
+# Check if bind_address is set
+bind_address=$(mysql -N -e "SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'bind_address';")
+
+if [ -z "$bind_address" ]; then
+    echo "The bind_address configuration option is not set. This is a fail."
+    echo "To remediate, add the following entry under the [mysqld] option group in your MariaDB configuration file (e.g., /etc/mysql/mariadb.conf.d/50-server.cnf):"
+    echo "bind_address=<your_IP_address>"
+    echo "Replace <your_IP_address> with the desired IPv4 or IPv6 address."
+else
+    echo "The bind_address configuration option is set to: $bind_address. This check passes."
+fi
+# This script checks if the MariaDB server accepts only specified versions of TLS.
+
+# Check accepted TLS versions
+accepted_tls=$(mysql -N -e "SELECT @@tls_version;")
+
+if [[ $accepted_tls =~ TLSv1.1|TLSv1 ]]; then
+    echo "The server accepts TLSv1 and/or TLSv1.1, which is a fail."
+    echo "To remediate, set the tls_version option in your MariaDB configuration file to limit accepted TLS versions."
+    echo "For example, add the following entry under the [mysqld] option group:"
+    echo "tls_version=TLSv1.2,TLSv1.3"
+else
+    echo "The server accepts the following TLS versions: $accepted_tls. This check passes."
+fi
+
+# This script checks if client-side certificates (X.509) are required for user accounts (excluding internal users).
+
+# Check user accounts for X.509 requirement
+x509_users=$(mysql -N -e "SELECT user, host, ssl_type FROM mysql.user WHERE user NOT IN ('mysql', 'root', 'mariadb.sys');")
+
+if [[ -n $x509_users ]]; then
+    echo "The following user accounts require X.509 certificates:"
+    echo "$x509_users"
+    echo "To remediate, create or alter users using the REQUIRE X509 clause."
+    echo "For example:"
+    echo "CREATE USER 'newuser2'@'%' IDENTIFIED BY '<password>' REQUIRE X509;"
+    echo "For accounts created with REQUIRE X509, clients must specify --sslcert, --ssl-key, and --ssl-ca (or --ssl-capath)."
+else
+    echo "No user accounts require X.509 certificates. This check passes."
+fi
+
+#!/bin/bash
+
+# This script checks if only approved ciphers are used in MariaDB.
+
+# Check for approved ciphers
+approved_ciphers=("ECDHE-ECDSA-AES128-GCM-SHA256" "ADD_YOUR_APPROVED_CIPHERS_HERE")
+current_cipher=$(mysql -N -e "SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'ssl_cipher';")
+
+if [[ -z $current_cipher ]]; then
+    echo "ssl_cipher is not set. This is a fail."
+else
+    valid_cipher=false
+    for cipher in "${approved_ciphers[@]}"; do
+        if [[ $current_cipher == *"$cipher"* ]]; then
+            valid_cipher=true
+            break
+        fi
+    done
+
+    if $valid_cipher; then
+        echo "The current ssl_cipher configuration is using an approved cipher. This check passes."
+    else
+        echo "The current ssl_cipher configuration includes unapproved ciphers. This is a fail."
+        echo "To remediate, set ssl_cipher to one or more approved cipher suites in your MariaDB configuration file."
+        echo "For example, set:"
+        echo "ssl_cipher='ECDHE-ECDSA-AES128-GCM-SHA256'"
+    fi
+fi
+
+# This script checks and corrects the permissions of the MariaDB data directory (datadir).
+
+# Get datadir value from MariaDB
+datadir=$(mysql -N -e "SHOW VARIABLES LIKE 'datadir';" | awk '{print $2}')
+
+# Check if datadir is empty
+if [[ -z $datadir ]]; then
+    echo "Error: Could not retrieve datadir value. Make sure MariaDB is running and accessible."
+    exit 1
+fi
+
+# Check datadir permissions
+permissions=$(sudo ls -ld "$datadir" 2>/dev/null)
+if [[ -z $permissions ]]; then
+    echo "Error: Could not retrieve permissions for datadir: $datadir"
+    exit 1
+fi
+
+# Check if permissions are correct
+if [[ $permissions =~ drwxr-x---.*mysql.*mysql ]]; then
+    echo "The datadir permissions are correct. This check passes."
+else
+    echo "The datadir permissions are incorrect. Applying remediation..."
+    
+    # Correct permissions
+    sudo chmod 750 "$datadir"
+    sudo chown mysql:mysql "$datadir"
+
+    echo "Permissions have been corrected."
+fi
+
+# This script checks and corrects the permissions of the MariaDB binary log files.
+
+# Get log_bin_basename value from MariaDB
+log_bin_basename=$(mysql -N -e "SHOW VARIABLES LIKE 'log_bin_basename';" | awk '{print $2}')
+
+# Check if log_bin_basename is empty
+if [[ -z $log_bin_basename ]]; then
+    echo "Error: Could not retrieve log_bin_basename value. Make sure MariaDB is running and accessible."
+    exit 1
+fi
+
+# Check binary log file permissions
+log_file_permissions=$(ls -l "$log_bin_basename"* 2>/dev/null | egrep '^-([r|w]{2}-[r|w]{2}----.*mysql\s*mysql).*'$log_bin_basename'.*$')
+if [[ -z $log_file_permissions ]]; then
+    echo "The binary log file permissions are correct. This check passes."
+else
+    echo "The binary log file permissions are incorrect. Applying remediation..."
+
+    # Correct permissions for binary log files
+    chmod 660 "$log_bin_basename"*
+    chown mysql:mysql "$log_bin_basename"*
+
+    echo "Permissions have been corrected."
+fi
+
+# This script checks and corrects the permissions of the MariaDB error log file.
+
+# Get log_error value from MariaDB
+log_error=$(mysql -N -e "SHOW VARIABLES LIKE 'log_error';" | awk '{print $2}')
+
+# Check if log_error is empty
+if [[ -z $log_error ]]; then
+    echo "Error: Could not retrieve log_error value. Make sure MariaDB is running and accessible."
+    exit 1
+fi
+
+# Check error log file permissions
+error_log_permissions=$(ls -l "$log_error" 2>/dev/null | grep '^-rw-------.*mysql.*mysql.*$')
+if [[ -z $error_log_permissions ]]; then
+    echo "The error log file permissions are correct. This check passes."
+else
+    echo "The error log file permissions are incorrect. Applying remediation..."
+
+    # Correct permissions for error log file
+    chmod 600 "$log_error"
+    chown mysql:mysql "$log_error"
+
+    echo "Permissions have been corrected."
+fi
+
+# This script checks and corrects the permissions of the MariaDB slow query log file.
+
+# Get slow_query_log value from MariaDB
+slow_query_log=$(mysql -N -e "SHOW VARIABLES LIKE 'slow_query_log';" | awk '{print $2}')
+
+# Check if slow_query_log is enabled
+if [[ $slow_query_log != "OFF" ]]; then
+    # Get slow_query_log_file value from MariaDB
+    slow_query_log_file=$(mysql -N -e "SHOW VARIABLES LIKE 'slow_query_log_file';" | awk '{print $2}')
+
+    # Check slow query log file permissions
+    slow_query_log_permissions=$(ls -l "$slow_query_log_file" 2>/dev/null | grep '^-rw-------.*mysql.*mysql.*$')
+    if [[ -z $slow_query_log_permissions ]]; then
+        echo "The slow query log file permissions are correct. This check passes."
+    else
+        echo "The slow query log file permissions are incorrect. Applying remediation..."
+
+        # Correct permissions for slow query log file
+        chmod 660 "$slow_query_log_file"
+        chown mysql:mysql "$slow_query_log_file"
+
+        echo "Permissions have been corrected."
+    fi
+else
+    echo "The slow query log is disabled. No remediation is needed."
+fi
+
+# This script checks and corrects the permissions of the MariaDB relay log file.
+
+# Get relay_log_basename value from MariaDB
+relay_log_basename=$(mysql -N -e "SHOW VARIABLES LIKE 'relay_log_basename';" | awk '{print $2}')
+
+# Check relay log file permissions
+relay_log_permissions=$(ls -l "$relay_log_basename" 2>/dev/null | grep '^-rw-------.*mysql.*mysql.*$')
+if [[ -z $relay_log_permissions ]]; then
+    echo "The relay log file permissions are correct. This check passes."
+else
+    echo "The relay log file permissions are incorrect. Applying remediation..."
+
+    # Correct permissions for relay log file
+    chmod 660 "$relay_log_basename"
+    chown mysql:mysql "$relay_log_basename"
+
+    echo "Permissions have been corrected."
+fi
+
+# This script checks and corrects the permissions of the MariaDB general log file.
+
+# Get general_log and general_log_file values from MariaDB
+general_log=$(mysql -N -e "SELECT @@general_log;")
+general_log_file=$(mysql -N -e "SELECT @@general_log_file;")
+
+# Check if the general log is enabled
+if [[ "$general_log" -eq 0 ]]; then
+    echo "The general log is disabled. No further action is required."
+    exit 0
+fi
+
+# Check general log file permissions
+general_log_permissions=$(ls -l "$general_log_file" 2>/dev/null | grep '^-rw-------.*mysql.*mysql.*$')
+if [[ -z "$general_log_permissions" ]]; then
+    echo "The general log file permissions are correct. This check passes."
+else
+    echo "The general log file permissions are incorrect. Applying remediation..."
+
+    # Correct permissions for general log file
+    chmod 600 "$general_log_file"
+    chown mysql:mysql "$general_log_file"
+
+    echo "Permissions have been corrected."
+fi
+
+# This script checks and corrects the permissions of SSL key files used by MariaDB.
+
+# Execute the following SQL statement to determine the SSL key files in use
+ssl_variables=$(mysql -N -e "SELECT VARIABLE_NAME, VARIABLE_VALUE FROM information_schema.global_variables WHERE REGEXP_INSTR(VARIABLE_NAME,'^.*ssl_(ca|capath|cert|crl|crlpath|key)$') AND VARIABLE_VALUE <> '';")
+
+# Iterate through the SSL key files and check permissions
+while read -r line; do
+    ssl_variable=$(echo "$line" | awk '{print $1}')
+    ssl_file=$(echo "$line" | awk '{print $2}')
+
+    echo "Checking permissions for $ssl_variable: $ssl_file"
+
+    # Check SSL key file permissions
+    ssl_file_permissions=$(ls -l "$ssl_file" 2>/dev/null | egrep '^-(?!r-{8}.*mysql\s*mysql).*$')
+    if [[ -z "$ssl_file_permissions" ]]; then
+        echo "The permissions for $ssl_variable are correct. This check passes."
+    else
+        echo "The permissions for $ssl_variable are incorrect. Applying remediation..."
+
+        # Correct permissions for SSL key file
+        chown mysql:mysql "$ssl_file"
+        chmod 400 "$ssl_file"
+
+        echo "Permissions have been corrected for $ssl_variable."
+    fi
+done <<< "$ssl_variables"
+
+# This script checks and corrects the permissions of the MariaDB plugin directory.
+
+# Execute the following SQL statement to determine the plugin directory
+plugin_dir=$(mysql -N -e "SHOW VARIABLES LIKE 'plugin_dir';" | awk '{print $2}')
+
+echo "Checking permissions for plugin directory: $plugin_dir"
+
+# Check plugin directory permissions
+plugin_dir_permissions=$(ls -ld "$plugin_dir" 2>/dev/null | grep "dr-xr-x---\|dr-xr-xr--" | grep "plugin")
+
+if [[ -z "$plugin_dir_permissions" ]]; then
+    echo "The permissions for the plugin directory are correct. This check passes."
+else
+    echo "The permissions for the plugin directory are incorrect. Applying remediation..."
+
+    # Correct permissions for the plugin directory
+    chmod 550 "$plugin_dir"  # or use 554
+    chown mysql:mysql "$plugin_dir"
+
+    echo "Permissions have been corrected for the plugin directory."
+fi
+
+# This script checks and corrects the permissions of the MariaDB audit log file.
+
+# Execute the following SQL statement to determine the audit log file path
+audit_log_path=$(mysql -N -e "SHOW VARIABLES LIKE 'server_audit_file_path';" | awk '{print $2}')
+
+if [[ -z "$audit_log_path" ]]; then
+    echo "Audit logging is not installed. This check fails."
+    exit 1
+fi
+
+echo "Checking permissions for audit log file: $audit_log_path"
+
+# Check audit log file permissions
+audit_log_permissions=$(ls -l "$audit_log_path" 2>/dev/null | egrep "^-([rw-]{2}-){2}---[ \t]*[0-9][ \t]*mysql[ \t]*mysql.*$")
+
+if [[ -z "$audit_log_permissions" ]]; then
+    echo "The permissions for the audit log file are correct. This check passes."
+else
+    echo "The permissions for the audit log file are incorrect. Applying remediation..."
+
+    # Correct permissions for the audit log file
+    chmod 660 "$audit_log_path"
+    chown mysql:mysql "$audit_log_path"
+
+    echo "Permissions have been corrected for the audit log file."
+fi
+
+# This script checks and corrects the permissions of File Key Management Encryption plugin files.
+
+# Find the file_key_management_filename value
+file_key_management_filename=$(grep -Po '(?<=file_key_management_filename=).+$' /etc/mysql/mariadb.cnf)
+
+if [[ -z "$file_key_management_filename" ]]; then
+    echo "File Key Management Encryption plugin is not configured. This check fails."
+    exit 1
+fi
+
+# Check permissions for file_key_management_filename
+echo "Checking permissions for file_key_management_filename: $file_key_management_filename"
+
+file_key_management_filename_permissions=$(ls -l "$file_key_management_filename" 2>/dev/null | egrep "^drwxr-x---.*mysql[ \t]*mysql.*$")
+
+if [[ -z "$file_key_management_filename_permissions" ]]; then
+    echo "The permissions for file_key_management_filename are correct. This check passes."
+else
+    echo "The permissions for file_key_management_filename are incorrect. Applying remediation..."
+
+    # Correct permissions for file_key_management_filename
+    chmod 750 "$file_key_management_filename"
+    chown mysql:mysql "$file_key_management_filename"
+
+    echo "Permissions have been corrected for file_key_management_filename."
+fi
+
+# Find the file_key_management_filekey value
+file_key_management_filekey=$(grep -Po '(?<=file_key_management_filekey=).+$' /etc/mysql/mariadb.cnf)
+
+if [[ -z "$file_key_management_filekey" ]]; then
+    echo "File Key Management Encryption plugin file key is not configured. This check fails."
+    exit 1
+fi
+
+# Check permissions for file_key_management_filekey
+echo "Checking permissions for file_key_management_filekey: $file_key_management_filekey"
+
+file_key_management_filekey_permissions=$(ls -l "$file_key_management_filekey" 2>/dev/null | egrep "^drwxr-x---.*mysql[ \t]*mysql.*$")
+
+if [[ -z "$file_key_management_filekey_permissions" ]]; then
+    echo "The permissions for file_key_management_filekey are correct. This check passes."
+else
+    echo "The permissions for file_key_management_filekey are incorrect. Applying remediation..."
+
+    # Correct permissions for file_key_management_filekey
+    chmod 750 "$file_key_management_filekey"
+    chown mysql:mysql "$file_key_management_filekey"
+
+    echo "Permissions have been corrected for file_key_management_filekey."
+fi
+
+# This script checks and corrects the configuration of 'allow-suspicious-udfs' in MariaDB.
+
+# Check if --allow-suspicious-udfs is specified in the mariadbd start up command line
+if ps aux | grep -q "[m]ariadbd.*--allow-suspicious-udfs"; then
+    echo "WARNING: --allow-suspicious-udfs is specified in the mariadbd start up command line. Please remove it."
+else
+    echo "--allow-suspicious-udfs is not specified in the mariadbd start up command line. This check passes."
+fi
+
+# Check if allow-suspicious-udfs is set to OFF in the MariaDB configuration
+allow_suspicious_udfs_config=$(my_print_defaults mysqld | grep -Po '(?<=--allow-suspicious-udfs=).+$')
+
+if [[ -z "$allow_suspicious_udfs_config" ]]; then
+    echo "allow-suspicious-udfs is not set in the MariaDB configuration. This check passes."
+else
+    if [[ "$allow_suspicious_udfs_config" == "OFF" ]]; then
+        echo "allow-suspicious-udfs is set to OFF in the MariaDB configuration. This check passes."
+    else
+        echo "WARNING: allow-suspicious-udfs is set to $allow_suspicious_udfs_config in the MariaDB configuration. Please set it to OFF."
+    fi
+fi
+
+# This script checks and corrects the configuration of 'local_infile' in MariaDB.
+
+# Check the version of MariaDB client
+mariadb_version=$(mariadb --version | grep -oP '(?<=mariadb\s)[0-9]+\.[0-9]+\.[0-9]+')
+
+if [[ "$(echo "$mariadb_version >= 10.2.0" | bc)" -eq 1 ]]; then
+    echo "MariaDB client version is $mariadb_version. This check passes."
+else
+    echo "WARNING: MariaDB client version is $mariadb_version. Upgrade to version 10.2.0 or higher."
+fi
+
+# Check the value of local_infile
+local_infile_value=$(mariadb -e "SHOW VARIABLES WHERE Variable_name = 'local_infile'" --batch --skip-column-names)
+
+if [[ "$local_infile_value" == "0" ]]; then
+    echo "local_infile is set to $local_infile_value. This check passes."
+else
+    echo "WARNING: local_infile is set to $local_infile_value. Please set it to 0."
+fi
+
+# This script checks and corrects the configuration of 'skip-grant-tables' in MariaDB.
+
+# Check the MariaDB configuration file for skip-grant-tables
+config_file="/etc/mysql/mariadb.cnf"
+
+if grep -q '^\s*skip-grant-tables\s*=' "$config_file"; then
+    echo "WARNING: 'skip-grant-tables' is found in the configuration file. Please set it to 'FALSE' or remove it."
+else
+    echo "'skip-grant-tables' is not found in the configuration file. This check passes."
+fi
+
+# Check for occurrences of skip_grant_tables
+occurrences=$(grep -c '^\s*skip_grant_tables\s*=' "$config_file")
+
+if [[ "$occurrences" -gt 0 ]]; then
+    echo "WARNING: There are $occurrences occurrences of 'skip_grant_tables' in the configuration file. Please set them to 'FALSE' or remove them."
+else
+    echo "No occurrences of 'skip_grant_tables' found in the configuration file. This check passes."
+fi
+
+# This script checks and corrects the configuration of symbolic links in MariaDB.
+
+# Check the MariaDB configuration file for skip-symbolic-links
+config_file="/etc/mysql/mariadb.cnf"
+
+if grep -q '^\s*skip-symbolic-links\s*=' "$config_file"; then
+    echo "'skip-symbolic-links' is found in the configuration file. This check passes."
+else
+    echo "WARNING: 'skip-symbolic-links' is not found in the configuration file. Please add it to the [mariadbd] section."
+fi
+
+# Check the current status of symbolic links
+symbolic_links_status=$(mysql -e "SHOW VARIABLES LIKE 'have_symlink';" | grep 'DISABLED')
+
+if [[ -n "$symbolic_links_status" ]]; then
+    echo "'have_symlink' is set to DISABLED. This check passes."
+else
+    echo "WARNING: 'have_symlink' is not set to DISABLED. Please ensure symbolic links are disabled."
+fi
+
+# This script checks and corrects the configuration of 'secure_file_priv' in MariaDB.
+
+# Check the MariaDB configuration file for 'secure_file_priv'
+config_file="/etc/mysql/mariadb.cnf"
+
+if grep -q '^\s*secure_file_priv\s*=' "$config_file"; then
+    secure_file_priv_value=$(grep '^\s*secure_file_priv\s*=' "$config_file" | awk -F= '{print $2}' | tr -d '[:space:]')
+
+    if [ "$secure_file_priv_value" == "NULL" ]; then
+        echo "'secure_file_priv' is correctly set to NULL. This check passes."
+    elif [ -n "$secure_file_priv_value" ]; then
+        echo "WARNING: 'secure_file_priv' is set to a specific path. Please review and ensure it is secure."
+    else
+        echo "WARNING: 'secure_file_priv' is found in the configuration file, but its value is not recognized. Please review and correct."
+    fi
+else
+    echo "WARNING: 'secure_file_priv' is not found in the configuration file. Please add it to the [mariadbd] section."
+fi
+
+# This script checks and corrects the configuration of 'sql_mode' in MariaDB.
+
+# Check the global sql_mode
+current_sql_mode=$(mysql -N -e "SHOW VARIABLES LIKE 'sql_mode';" | awk '{print $2}')
+
+if [[ $current_sql_mode == *STRICT_ALL_TABLES* ]]; then
+    echo "'sql_mode' includes 'STRICT_ALL_TABLES'. This check passes."
+else
+    echo "WARNING: 'STRICT_ALL_TABLES' is not found in 'sql_mode'. Adding it..."
+    
+    # Add 'STRICT_ALL_TABLES' to sql_mode
+    new_sql_mode="$current_sql_mode,STRICT_ALL_TABLES"
+    mysql -e "SET GLOBAL sql_mode = '$new_sql_mode';"
+
+    echo "Added 'STRICT_ALL_TABLES' to 'sql_mode'."
+fi
+
+# Script to enable data-at-rest encryption in MariaDB
+
+# Create key file
+sudo mkdir -p /etc/mysql/encryption && (echo -n "1;" ; openssl rand -hex 32 ) | sudo tee -a /etc/mysql/encryption/keyfile
+
+# Generate random encryption password
+sudo openssl rand -hex 128 | sudo tee -a /etc/mysql/encryption/keyfile.key
+
+# Encrypt the key file
+sudo openssl enc -aes-256-cbc -md sha1 \
+ -pass file:/etc/mysql/encryption/keyfile.key \
+ -in /etc/mysql/encryption/keyfile \
+ -out /etc/mysql/encryption/keyfile.enc
+
+# Delete the unencrypted key file
+sudo rm /etc/mysql/encryption/keyfile
+
+# Set permissions and ownership on the keyfile and key
+sudo chown mysql:mysql -R /etc/mysql/encryption
+sudo chmod 640 /etc/mysql/encryption/keyfile*
+
+# Edit mariadb.cnf
+sudo tee -a /etc/mysql/mariadb.cnf <<EOL
+[mariadb]
+plugin_load_add = file_key_management
+file_key_management_filename = /etc/mysql/encryption/keyfile.enc
+file_key_management_filekey = FILE:/etc/mysql/encryption/keyfile.key
+encrypt_binlog = ON
+innodb_encrypt_log = ON
+encrypt_tmp_files = ON
+innodb_encrypt_tables = ON
+EOL
+
+# Restart MariaDB
+sudo systemctl restart mariadb.service
+
+# Run ALTER to enable encryption (replace 'tab1' with your table name)
+# ALTER TABLE tab1 ENCRYPTED=YES ENCRYPTION_KEY_ID=1;
+
+echo "Data-at-rest encryption enabled successfully."
